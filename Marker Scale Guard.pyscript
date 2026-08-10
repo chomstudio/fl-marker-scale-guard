@@ -216,6 +216,24 @@ def _detect_mistones(note_snapshots, active_markers):
     return mistones
 
 
+def _detect_non_chord_notes(note_snapshots, active_markers):
+    # 有効区間内からスケール内外を問わずコード構成音ではないノートを検出する。
+    marker_times = [marker["time"] for marker in active_markers]
+    non_chord_notes = []
+    for note in note_snapshots:
+        marker = _marker_for_note_time(note["time"], active_markers, marker_times)
+        if marker is None:
+            continue
+        if note["number"] % 12 in marker["chord_pitch_classes"]:
+            continue
+        detected = dict(note)
+        detected["marker"] = marker
+        non_chord_notes.append(detected)
+
+    non_chord_notes.sort(key=lambda note: (note["time"], note["score_index"]))
+    return non_chord_notes
+
+
 def _find_marker_conflicts(valid_markers):
     # コード構成音のうち指定スケール外にある音をマーカーごとに収集する。
     conflicts = []
@@ -311,13 +329,13 @@ def _choose_destination(mistone, note_count):
     return None
 
 
-def _choose_forced_chord_destination(mistone, note_count):
+def _choose_forced_chord_destination(target_note, note_count):
     # 元音程から±6以内のコード構成音を距離順、同距離では高音側優先で検索する。
-    original_number = mistone["number"]
-    note_time = mistone["time"]
-    note_length = mistone["length"]
-    note_index = mistone["score_index"]
-    chord_pitch_classes = mistone["marker"]["chord_pitch_classes"]
+    original_number = target_note["number"]
+    note_time = target_note["time"]
+    note_length = target_note["length"]
+    note_index = target_note["score_index"]
+    chord_pitch_classes = target_note["marker"]["chord_pitch_classes"]
 
     for distance in range(FORCE_CHORD_MAX_DISTANCE + 1):
         if distance == 0:
@@ -337,18 +355,18 @@ def _choose_forced_chord_destination(mistone, note_count):
     return None
 
 
-def _move_or_delete_mistones(mistones, note_count, force_chord=False):
+def _move_or_delete_targets(target_notes, note_count, force_chord=False):
     # 仕様の処理順で移動先を確定し、移動不能ノートを最後に降順で削除する。
     delete_indices = []
-    for mistone in mistones:
+    for target_note in target_notes:
         if force_chord:
-            destination = _choose_forced_chord_destination(mistone, note_count)
+            destination = _choose_forced_chord_destination(target_note, note_count)
         else:
-            destination = _choose_destination(mistone, note_count)
+            destination = _choose_destination(target_note, note_count)
         if destination is None:
-            delete_indices.append(mistone["score_index"])
+            delete_indices.append(target_note["score_index"])
             continue
-        flp.score.getNote(mistone["score_index"]).number = destination
+        flp.score.getNote(target_note["score_index"]).number = destination
 
     for index in sorted(delete_indices, reverse=True):
         flp.score.deleteNote(index)
@@ -379,6 +397,7 @@ def _prepare_script_state():
     active_markers = _build_active_markers(valid_markers)
     note_snapshots = _read_note_snapshots(note_count)
     mistones = _detect_mistones(note_snapshots, active_markers)
+    non_chord_notes = _detect_non_chord_notes(note_snapshots, active_markers)
     conflicts = _find_marker_conflicts(valid_markers)
     return {
         "note_count": note_count,
@@ -386,6 +405,7 @@ def _prepare_script_state():
         "valid_markers": valid_markers,
         "active_markers": active_markers,
         "mistones": mistones,
+        "non_chord_notes": non_chord_notes,
         "conflicts": conflicts,
     }
 
@@ -404,16 +424,30 @@ if _STATE is not None:
     _show_marker_conflict_warning(_STATE["conflicts"])
 
 
-if _STATE is not None and _STATE["active_markers"] and not _STATE["mistones"]:
+if (
+    _STATE is not None
+    and _STATE["active_markers"]
+    and not _STATE["mistones"]
+    and not _STATE["non_chord_notes"]
+):
     flp.Utils.ShowMessage("対象のノートは見つかりませんでした。")
 
 
-if _STATE is not None and _STATE["active_markers"] and _STATE["mistones"]:
+if (
+    _STATE is not None
+    and _STATE["active_markers"]
+    and (_STATE["mistones"] or _STATE["non_chord_notes"])
+):
 
     def createDialog():
         # 検出数を説明へ表示し、仕様で定めた3種類の処理方法を選択可能にする。
-        description = "検出されたミストーン: {0}件\n処理方法を選択してください。".format(
-            len(_STATE["mistones"])
+        description = (
+            "検出されたミストーン: {0}件\n"
+            "コード構成音ではないノート: {1}件\n"
+            "処理方法を選択してください。"
+        ).format(
+            len(_STATE["mistones"]),
+            len(_STATE["non_chord_notes"]),
         )
         form = flp.ScriptDialog(SCRIPT_NAME, description)
         form.addInputCombo(PROCESS_INPUT_NAME, PROCESS_OPTIONS, 0)
@@ -427,8 +461,13 @@ if _STATE is not None and _STATE["active_markers"] and _STATE["mistones"]:
             process_index = int(form.getInputValue(PROCESS_INPUT_NAME))
             if process_index == 0:
                 force_chord = bool(form.getInputValue(FORCE_CHORD_INPUT_NAME))
-                _move_or_delete_mistones(
-                    _STATE["mistones"], _STATE["note_count"], force_chord
+                target_notes = (
+                    _STATE["non_chord_notes"]
+                    if force_chord
+                    else _STATE["mistones"]
+                )
+                _move_or_delete_targets(
+                    target_notes, _STATE["note_count"], force_chord
                 )
             elif process_index == 1:
                 _select_mistones(_STATE["mistones"], _STATE["note_count"])

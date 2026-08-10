@@ -251,13 +251,35 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(detected_indices, [1, 2])
 
     def test_chromatic_marker_detects_nothing(self):
-        # コード名だけのマーカーがクロマチックスケールとして扱われることを確認する。
+        # コード名だけならミストーンはなくても、非コード音用のダイアログは表示する。
         module, fake_flp = load_script(
             [FakeNote(61, 0)],
             [FakeMarker("C", 0)],
         )
         self.assertEqual(module["_STATE"]["mistones"], [])
-        self.assertIn("対象のノートは見つかりませんでした。", fake_flp.Utils.messages)
+        self.assertEqual(len(module["_STATE"]["non_chord_notes"]), 1)
+        self.assertIn("createDialog", module)
+        self.assertNotIn("対象のノートは見つかりませんでした。", fake_flp.Utils.messages)
+
+    def test_c_major_scale_notes_are_force_targets_for_c_chord(self):
+        # C_(C)ではスケール内のD、F、A、Bも非コード音として強制対象にする。
+        notes = [FakeNote(60 + pitch_class, pitch_class * 96) for pitch_class in range(12)]
+        module, _ = load_script(notes, [FakeMarker("C_(C)", 0)])
+        target_pitch_classes = {
+            note["number"] % 12 for note in module["_STATE"]["non_chord_notes"]
+        }
+        self.assertTrue({2, 5, 9, 11}.issubset(target_pitch_classes))
+        self.assertTrue({0, 4, 7}.isdisjoint(target_pitch_classes))
+
+    def test_c_major_scale_notes_are_force_targets_for_a_minor_chord(self):
+        # Am_(C)ではスケール内のBとGを含む非コード音を強制対象にする。
+        notes = [FakeNote(60 + pitch_class, pitch_class * 96) for pitch_class in range(12)]
+        module, _ = load_script(notes, [FakeMarker("Am_(C)", 0)])
+        target_pitch_classes = {
+            note["number"] % 12 for note in module["_STATE"]["non_chord_notes"]
+        }
+        self.assertTrue({7, 11}.issubset(target_pitch_classes))
+        self.assertTrue({0, 4, 9}.isdisjoint(target_pitch_classes))
 
     def test_no_valid_marker_finishes_without_dialog_or_message(self):
         # 有効マーカーがない場合、処理用関数も通常メッセージも生成しないことを確認する。
@@ -299,7 +321,7 @@ class ProcessingTests(unittest.TestCase):
         notes = [FakeNote(61, 0)]
         markers = [FakeMarker("D7_(000)", 0)]
         module, fake_flp = load_script(notes, markers)
-        module["_move_or_delete_mistones"](
+        module["_move_or_delete_targets"](
             module["_STATE"]["mistones"], module["_STATE"]["note_count"]
         )
         self.assertEqual(fake_flp.score.notes[0].number, 62)
@@ -350,7 +372,7 @@ class ProcessingTests(unittest.TestCase):
         markers = [FakeMarker("Cdim_(000)", 0)]
         module, fake_flp = load_script(notes, markers)
         first_mistone = [module["_STATE"]["mistones"][0]]
-        module["_move_or_delete_mistones"](first_mistone, len(notes))
+        module["_move_or_delete_targets"](first_mistone, len(notes))
         self.assertEqual([note.number for note in fake_flp.score.notes], [62, 60])
 
     def test_processing_order_includes_previous_move(self):
@@ -358,7 +380,7 @@ class ProcessingTests(unittest.TestCase):
         notes = [FakeNote(61, 0, 96), FakeNote(61, 0, 96)]
         markers = [FakeMarker("D7_(000)", 0)]
         module, fake_flp = load_script(notes, markers)
-        module["_move_or_delete_mistones"](
+        module["_move_or_delete_targets"](
             module["_STATE"]["mistones"], module["_STATE"]["note_count"]
         )
         self.assertEqual([note.number for note in fake_flp.score.notes], [62, 60])
@@ -402,7 +424,7 @@ class ProcessingTests(unittest.TestCase):
         markers = [FakeMarker("C_(ad5)", 0)]
         module, fake_flp = load_script(notes, markers)
         first_mistone = [module["_STATE"]["mistones"][0]]
-        module["_move_or_delete_mistones"](first_mistone, len(notes), True)
+        module["_move_or_delete_targets"](first_mistone, len(notes), True)
         self.assertEqual([note.number for note in fake_flp.score.notes], [67, 64, 72, 60])
 
     def test_forced_chord_keeps_existing_chord_tone(self):
@@ -453,6 +475,18 @@ class ProcessingTests(unittest.TestCase):
         form.values[module["FORCE_CHORD_INPUT_NAME"]] = True
         module["apply"](form)
         self.assertEqual(fake_flp.score.notes[0].number, 72)
+
+    def test_apply_forces_scale_note_that_is_not_chord_tone(self):
+        # ミストーンではないCメジャーのDも、Cコードへの強制時はEへ移動する。
+        module, fake_flp = load_script(
+            [FakeNote(62, 0)],
+            [FakeMarker("C_(C)", 0)],
+        )
+        self.assertEqual(module["_STATE"]["mistones"], [])
+        form = module["createDialog"]()
+        form.values[module["FORCE_CHORD_INPUT_NAME"]] = True
+        module["apply"](form)
+        self.assertEqual(fake_flp.score.notes[0].number, 64)
 
     def test_force_checkbox_does_not_change_selection_operation(self):
         # 選択処理では強制チェックを無視し、音程を変えず検出ノートだけを選択する。
