@@ -149,9 +149,9 @@ class MarkerParsingTests(unittest.TestCase):
             "CdimM7",
             "Caugsus4",
             "Cm-5",
-            "Bb7_(ad5)",
-            "Am_(101011010101)",
-            "F#_(G)",
+            "Bb7_ad5",
+            "Am_101011010101",
+            "F#_G",
         ]
         for name in valid_names:
             with self.subTest(name=name):
@@ -168,10 +168,13 @@ class MarkerParsingTests(unittest.TestCase):
             "C9",
             "H",
             "c",
-            "C_(ad)",
-            "C_(minor)",
-            "C_(10101101010)",
-            "C_(101011010102)",
+            "C_ad",
+            "C_minor",
+            "C_10101101010",
+            "C_101011010102",
+            "C_(ad5)",
+            "C_(C)",
+            "C_(101011010101)",
         ]
         for name in invalid_names:
             with self.subTest(name=name):
@@ -183,10 +186,10 @@ class MarkerParsingTests(unittest.TestCase):
         # CメジャーとGメジャーのキー指定が仕様書の16進数と一致することを確認する。
         module, _ = load_script()
         parse = module["_parse_marker_name"]
-        c_key, _ = parse("C_(C)", 0, 0)
-        c_binary, _ = parse("C_(101011010101)", 0, 0)
-        g_key, _ = parse("G_(G)", 0, 0)
-        g_hex, _ = parse("G_(ab5)", 0, 0)
+        c_key, _ = parse("C_C", 0, 0)
+        c_binary, _ = parse("C_101011010101", 0, 0)
+        g_key, _ = parse("G_G", 0, 0)
+        g_hex, _ = parse("G_ab5", 0, 0)
         self.assertEqual(c_key["scale_mask"], 0xAD5)
         self.assertEqual(c_binary["scale_mask"], 0xAD5)
         self.assertEqual(g_key["scale_mask"], 0xAB5)
@@ -215,9 +218,9 @@ class DetectionTests(unittest.TestCase):
             FakeNote(66, 250),
         ]
         markers = [
-            FakeMarker("C_(ad5)", 100),
+            FakeMarker("C_ad5", 100),
             FakeMarker("invalid", 200),
-            FakeMarker("G_(ab5)", 300),
+            FakeMarker("G_ab5", 300),
         ]
         module, fake_flp = load_script(notes, markers)
         detected_indices = [note["score_index"] for note in module["_STATE"]["mistones"]]
@@ -228,12 +231,12 @@ class DetectionTests(unittest.TestCase):
         # 同時刻の後方マーカーがノート開始時刻ちょうどから適用されることを確認する。
         notes = [FakeNote(66, 100)]
         markers = [
-            FakeMarker("C_(ad5)", 100),
-            FakeMarker("G_(ab5)", 100),
+            FakeMarker("C_ad5", 100),
+            FakeMarker("G_ab5", 100),
         ]
         module, _ = load_script(notes, markers)
         self.assertEqual(module["_STATE"]["mistones"], [])
-        self.assertEqual(module["_STATE"]["active_markers"][0]["name"], "G_(ab5)")
+        self.assertEqual(module["_STATE"]["active_markers"][0]["name"], "G_ab5")
 
     def test_note_uses_marker_at_its_start(self):
         # 区間をまたぐノートと最初のマーカー前のノートを開始位置だけで判定する。
@@ -243,8 +246,8 @@ class DetectionTests(unittest.TestCase):
             FakeNote(66, 290, 100),
         ]
         markers = [
-            FakeMarker("C_(ad5)", 100),
-            FakeMarker("G_(ab5)", 300),
+            FakeMarker("C_ad5", 100),
+            FakeMarker("G_ab5", 300),
         ]
         module, _ = load_script(notes, markers)
         detected_indices = [note["score_index"] for note in module["_STATE"]["mistones"]]
@@ -262,9 +265,9 @@ class DetectionTests(unittest.TestCase):
         self.assertNotIn("対象のノートは見つかりませんでした。", fake_flp.Utils.messages)
 
     def test_c_major_scale_notes_are_force_targets_for_c_chord(self):
-        # C_(C)ではスケール内のD、F、A、Bも非コード音として強制対象にする。
+        # C_Cではスケール内のD、F、A、Bも非コード音として強制対象にする。
         notes = [FakeNote(60 + pitch_class, pitch_class * 96) for pitch_class in range(12)]
-        module, _ = load_script(notes, [FakeMarker("C_(C)", 0)])
+        module, _ = load_script(notes, [FakeMarker("C_C", 0)])
         target_pitch_classes = {
             note["number"] % 12 for note in module["_STATE"]["non_chord_notes"]
         }
@@ -272,9 +275,9 @@ class DetectionTests(unittest.TestCase):
         self.assertTrue({0, 4, 7}.isdisjoint(target_pitch_classes))
 
     def test_c_major_scale_notes_are_force_targets_for_a_minor_chord(self):
-        # Am_(C)ではスケール内のBとGを含む非コード音を強制対象にする。
+        # Am_Cではスケール内のBとGを含む非コード音を強制対象にする。
         notes = [FakeNote(60 + pitch_class, pitch_class * 96) for pitch_class in range(12)]
-        module, _ = load_script(notes, [FakeMarker("Am_(C)", 0)])
+        module, _ = load_script(notes, [FakeMarker("Am_C", 0)])
         target_pitch_classes = {
             note["number"] % 12 for note in module["_STATE"]["non_chord_notes"]
         }
@@ -294,7 +297,7 @@ class DetectionTests(unittest.TestCase):
     def test_c_major_detects_only_outside_pitch_classes(self):
         # Cメジャーの12音から仕様で定めた5つのスケール外音だけを検出する。
         notes = [FakeNote(60 + pitch_class, pitch_class * 96) for pitch_class in range(12)]
-        module, _ = load_script(notes, [FakeMarker("C_(ad5)", 0)])
+        module, _ = load_script(notes, [FakeMarker("C_ad5", 0)])
         detected_pitch_classes = {
             note["number"] % 12 for note in module["_STATE"]["mistones"]
         }
@@ -303,14 +306,14 @@ class DetectionTests(unittest.TestCase):
     def test_conflict_warning_is_combined(self):
         # 複数の矛盾をマーカー名、tick、構成音付きの1メッセージへ集約する。
         markers = [
-            FakeMarker("D7_(C)", 100),
-            FakeMarker("E_(C)", 200),
+            FakeMarker("D7_C", 100),
+            FakeMarker("E_C", 200),
         ]
         _, fake_flp = load_script([], markers)
         self.assertEqual(len(fake_flp.Utils.messages), 2)
         warning = fake_flp.Utils.messages[0]
-        self.assertIn("D7_(C) / tick 100: F#", warning)
-        self.assertIn("E_(C) / tick 200: G#", warning)
+        self.assertIn("D7_C / tick 100: F#", warning)
+        self.assertIn("E_C / tick 200: G#", warning)
 
 
 class ProcessingTests(unittest.TestCase):
@@ -319,7 +322,7 @@ class ProcessingTests(unittest.TestCase):
     def test_adjacent_chord_tone_prefers_upward(self):
         # 半音上下がともにコード音なら高音側へ移動することを確認する。
         notes = [FakeNote(61, 0)]
-        markers = [FakeMarker("D7_(000)", 0)]
+        markers = [FakeMarker("D7_000", 0)]
         module, fake_flp = load_script(notes, markers)
         module["_move_or_delete_targets"](
             module["_STATE"]["mistones"], module["_STATE"]["note_count"]
@@ -329,7 +332,7 @@ class ProcessingTests(unittest.TestCase):
     def test_adjacent_collision_uses_other_direction(self):
         # 高音側が衝突するとき、衝突しない低音側のコード音を選ぶことを確認する。
         notes = [FakeNote(61, 0, 96), FakeNote(62, 0, 96)]
-        markers = [FakeMarker("Cdim_(000)", 0)]
+        markers = [FakeMarker("Cdim_000", 0)]
         module, fake_flp = load_script(notes, markers)
         mistone = module["_STATE"]["mistones"][0]
         destination = module["_choose_destination"](mistone, len(notes))
@@ -338,7 +341,7 @@ class ProcessingTests(unittest.TestCase):
     def test_touching_intervals_do_not_collide(self):
         # 一方の終了と他方の開始が一致するだけなら同音程候補を許可する。
         notes = [FakeNote(61, 0, 96), FakeNote(62, 96, 96)]
-        markers = [FakeMarker("D7_(000)", 0)]
+        markers = [FakeMarker("D7_000", 0)]
         module, _ = load_script(notes, markers)
         mistone = module["_STATE"]["mistones"][0]
         destination = module["_choose_destination"](mistone, len(notes))
@@ -347,7 +350,7 @@ class ProcessingTests(unittest.TestCase):
     def test_partially_overlapping_interval_collides(self):
         # 発音区間が一部分だけ重なる同音程ノートも衝突として扱う。
         notes = [FakeNote(61, 0, 96), FakeNote(62, 48, 96)]
-        markers = [FakeMarker("D7_(000)", 0)]
+        markers = [FakeMarker("D7_000", 0)]
         module, _ = load_script(notes, markers)
         mistone = module["_STATE"]["mistones"][0]
         destination = module["_choose_destination"](mistone, len(notes))
@@ -356,7 +359,7 @@ class ProcessingTests(unittest.TestCase):
     def test_fallback_scale_tone_prefers_upward_at_equal_distance(self):
         # 隣接コード音がない場合、同距離の非コード・スケール音から高音側を選ぶ。
         notes = [FakeNote(70, 0)]
-        markers = [FakeMarker("C_(ad5)", 0)]
+        markers = [FakeMarker("C_ad5", 0)]
         module, _ = load_script(notes, markers)
         mistone = module["_STATE"]["mistones"][0]
         destination = module["_choose_destination"](mistone, len(notes))
@@ -369,7 +372,7 @@ class ProcessingTests(unittest.TestCase):
             FakeNote(62, 0, 96),
             FakeNote(60, 0, 96),
         ]
-        markers = [FakeMarker("Cdim_(000)", 0)]
+        markers = [FakeMarker("Cdim_000", 0)]
         module, fake_flp = load_script(notes, markers)
         first_mistone = [module["_STATE"]["mistones"][0]]
         module["_move_or_delete_targets"](first_mistone, len(notes))
@@ -378,7 +381,7 @@ class ProcessingTests(unittest.TestCase):
     def test_processing_order_includes_previous_move(self):
         # 同時刻の検出ノートをscore順に処理し、先行する移動結果を次の衝突判定へ含める。
         notes = [FakeNote(61, 0, 96), FakeNote(61, 0, 96)]
-        markers = [FakeMarker("D7_(000)", 0)]
+        markers = [FakeMarker("D7_000", 0)]
         module, fake_flp = load_script(notes, markers)
         module["_move_or_delete_targets"](
             module["_STATE"]["mistones"], module["_STATE"]["note_count"]
@@ -388,7 +391,7 @@ class ProcessingTests(unittest.TestCase):
     def test_forced_chord_uses_nearest_candidate(self):
         # 強制時は通常のスケール音ではなく最寄りのコード構成音を選ぶ。
         notes = [FakeNote(66, 0, 96)]
-        markers = [FakeMarker("C_(ad5)", 0)]
+        markers = [FakeMarker("C_ad5", 0)]
         module, _ = load_script(notes, markers)
         mistone = module["_STATE"]["mistones"][0]
         destination = module["_choose_forced_chord_destination"](mistone, len(notes))
@@ -397,7 +400,7 @@ class ProcessingTests(unittest.TestCase):
     def test_forced_chord_tries_next_candidate_after_collision(self):
         # 最寄りのコード音が衝突する場合は、次に近いコード音を使用する。
         notes = [FakeNote(66, 0, 96), FakeNote(67, 0, 96)]
-        markers = [FakeMarker("C_(ad5)", 0)]
+        markers = [FakeMarker("C_ad5", 0)]
         module, _ = load_script(notes, markers)
         mistone = module["_STATE"]["mistones"][0]
         destination = module["_choose_forced_chord_destination"](mistone, len(notes))
@@ -406,7 +409,7 @@ class ProcessingTests(unittest.TestCase):
     def test_forced_chord_prefers_upward_at_equal_distance(self):
         # 強制候補が同距離で上下にある場合は高音側を優先する。
         notes = [FakeNote(61, 0, 96)]
-        markers = [FakeMarker("D7_(000)", 0)]
+        markers = [FakeMarker("D7_000", 0)]
         module, _ = load_script(notes, markers)
         mistone = module["_STATE"]["mistones"][0]
         destination = module["_choose_forced_chord_destination"](mistone, len(notes))
@@ -421,7 +424,7 @@ class ProcessingTests(unittest.TestCase):
             FakeNote(72, 0, 96),
             FakeNote(60, 0, 96),
         ]
-        markers = [FakeMarker("C_(ad5)", 0)]
+        markers = [FakeMarker("C_ad5", 0)]
         module, fake_flp = load_script(notes, markers)
         first_mistone = [module["_STATE"]["mistones"][0]]
         module["_move_or_delete_targets"](first_mistone, len(notes), True)
@@ -430,7 +433,7 @@ class ProcessingTests(unittest.TestCase):
     def test_forced_chord_keeps_existing_chord_tone(self):
         # 矛盾スケールで検出された音がすでにコード音なら距離0の候補として維持する。
         notes = [FakeNote(60, 0, 96)]
-        markers = [FakeMarker("C_(000)", 0)]
+        markers = [FakeMarker("C_000", 0)]
         module, _ = load_script(notes, markers)
         mistone = module["_STATE"]["mistones"][0]
         destination = module["_choose_forced_chord_destination"](mistone, len(notes))
@@ -439,7 +442,7 @@ class ProcessingTests(unittest.TestCase):
     def test_selection_replaces_existing_selection(self):
         # 既存選択を解除し、検出されたノートだけを選択することを確認する。
         notes = [FakeNote(60, 0, selected=True), FakeNote(61, 96)]
-        markers = [FakeMarker("C_(ad5)", 0)]
+        markers = [FakeMarker("C_ad5", 0)]
         module, fake_flp = load_script(notes, markers)
         module["_select_mistones"](
             module["_STATE"]["mistones"], module["_STATE"]["note_count"]
@@ -449,7 +452,7 @@ class ProcessingTests(unittest.TestCase):
     def test_delete_removes_only_detected_notes(self):
         # 複数の検出ノートを降順で削除し、スケール内ノートを残すことを確認する。
         notes = [FakeNote(61, 0), FakeNote(60, 96), FakeNote(63, 192)]
-        markers = [FakeMarker("C_(ad5)", 0)]
+        markers = [FakeMarker("C_ad5", 0)]
         module, fake_flp = load_script(notes, markers)
         module["_delete_mistones"](module["_STATE"]["mistones"])
         self.assertEqual([note.number for note in fake_flp.score.notes], [60])
@@ -458,7 +461,7 @@ class ProcessingTests(unittest.TestCase):
         # ミストーンがある場合だけ3項目のダイアログを作り、移動を既定値にする。
         module, _ = load_script(
             [FakeNote(61, 0)],
-            [FakeMarker("C_(ad5)", 0)],
+            [FakeMarker("C_ad5", 0)],
         )
         form = module["createDialog"]()
         self.assertEqual(form.options, module["PROCESS_OPTIONS"])
@@ -469,7 +472,7 @@ class ProcessingTests(unittest.TestCase):
         # 移動処理でチェックをオンにすると通常候補ではなくコード音へ強制する。
         module, fake_flp = load_script(
             [FakeNote(70, 0)],
-            [FakeMarker("C_(ad5)", 0)],
+            [FakeMarker("C_ad5", 0)],
         )
         form = module["createDialog"]()
         form.values[module["FORCE_CHORD_INPUT_NAME"]] = True
@@ -480,7 +483,7 @@ class ProcessingTests(unittest.TestCase):
         # ミストーンではないCメジャーのDも、Cコードへの強制時はEへ移動する。
         module, fake_flp = load_script(
             [FakeNote(62, 0)],
-            [FakeMarker("C_(C)", 0)],
+            [FakeMarker("C_C", 0)],
         )
         self.assertEqual(module["_STATE"]["mistones"], [])
         form = module["createDialog"]()
@@ -492,7 +495,7 @@ class ProcessingTests(unittest.TestCase):
         # 選択処理では強制チェックを無視し、音程を変えず検出ノートだけを選択する。
         module, fake_flp = load_script(
             [FakeNote(70, 0)],
-            [FakeMarker("C_(ad5)", 0)],
+            [FakeMarker("C_ad5", 0)],
         )
         form = module["createDialog"]()
         form.values[module["PROCESS_INPUT_NAME"]] = 1
