@@ -98,6 +98,10 @@ class FakeDialog:
         self.values[name] = default_index
         self.options = list(options)
 
+    def addInputCheckbox(self, name, default_value):
+        # チェックボックスの既定値を入力値として記録する。
+        self.values[name] = bool(default_value)
+
     def getInputValue(self, name):
         # apply()が参照する現在値を返す。
         return self.values[name]
@@ -146,6 +150,7 @@ class MarkerParsingTests(unittest.TestCase):
             "Caugsus4",
             "Cm-5",
             "Bb7_(ad5)",
+            "Am_(101011010101)",
             "F#_(G)",
         ]
         for name in valid_names:
@@ -157,7 +162,17 @@ class MarkerParsingTests(unittest.TestCase):
     def test_invalid_marker_forms_are_rejected(self):
         # 空白、テンション、非ASCII表記、情報の桁違いを拒否することを確認する。
         module, _ = load_script()
-        invalid_names = [" C", "C ", "C9", "H", "c", "C_(ad)", "C_(minor)"]
+        invalid_names = [
+            " C",
+            "C ",
+            "C9",
+            "H",
+            "c",
+            "C_(ad)",
+            "C_(minor)",
+            "C_(10101101010)",
+            "C_(101011010102)",
+        ]
         for name in invalid_names:
             with self.subTest(name=name):
                 parsed, reason = module["_parse_marker_name"](name, 0, 0)
@@ -169,9 +184,11 @@ class MarkerParsingTests(unittest.TestCase):
         module, _ = load_script()
         parse = module["_parse_marker_name"]
         c_key, _ = parse("C_(C)", 0, 0)
+        c_binary, _ = parse("C_(101011010101)", 0, 0)
         g_key, _ = parse("G_(G)", 0, 0)
         g_hex, _ = parse("G_(ab5)", 0, 0)
         self.assertEqual(c_key["scale_mask"], 0xAD5)
+        self.assertEqual(c_binary["scale_mask"], 0xAD5)
         self.assertEqual(g_key["scale_mask"], 0xAB5)
         self.assertEqual(g_key["scale_mask"], g_hex["scale_mask"])
 
@@ -346,6 +363,57 @@ class ProcessingTests(unittest.TestCase):
         )
         self.assertEqual([note.number for note in fake_flp.score.notes], [62, 60])
 
+    def test_forced_chord_uses_nearest_candidate(self):
+        # 強制時は通常のスケール音ではなく最寄りのコード構成音を選ぶ。
+        notes = [FakeNote(66, 0, 96)]
+        markers = [FakeMarker("C_(ad5)", 0)]
+        module, _ = load_script(notes, markers)
+        mistone = module["_STATE"]["mistones"][0]
+        destination = module["_choose_forced_chord_destination"](mistone, len(notes))
+        self.assertEqual(destination, 67)
+
+    def test_forced_chord_tries_next_candidate_after_collision(self):
+        # 最寄りのコード音が衝突する場合は、次に近いコード音を使用する。
+        notes = [FakeNote(66, 0, 96), FakeNote(67, 0, 96)]
+        markers = [FakeMarker("C_(ad5)", 0)]
+        module, _ = load_script(notes, markers)
+        mistone = module["_STATE"]["mistones"][0]
+        destination = module["_choose_forced_chord_destination"](mistone, len(notes))
+        self.assertEqual(destination, 64)
+
+    def test_forced_chord_prefers_upward_at_equal_distance(self):
+        # 強制候補が同距離で上下にある場合は高音側を優先する。
+        notes = [FakeNote(61, 0, 96)]
+        markers = [FakeMarker("D7_(000)", 0)]
+        module, _ = load_script(notes, markers)
+        mistone = module["_STATE"]["mistones"][0]
+        destination = module["_choose_forced_chord_destination"](mistone, len(notes))
+        self.assertEqual(destination, 62)
+
+    def test_forced_chord_deletes_when_all_candidates_collide(self):
+        # ±6以内にあるすべてのコード音が埋まっている場合は対象ノートを削除する。
+        notes = [
+            FakeNote(66, 0, 96),
+            FakeNote(67, 0, 96),
+            FakeNote(64, 0, 96),
+            FakeNote(72, 0, 96),
+            FakeNote(60, 0, 96),
+        ]
+        markers = [FakeMarker("C_(ad5)", 0)]
+        module, fake_flp = load_script(notes, markers)
+        first_mistone = [module["_STATE"]["mistones"][0]]
+        module["_move_or_delete_mistones"](first_mistone, len(notes), True)
+        self.assertEqual([note.number for note in fake_flp.score.notes], [67, 64, 72, 60])
+
+    def test_forced_chord_keeps_existing_chord_tone(self):
+        # 矛盾スケールで検出された音がすでにコード音なら距離0の候補として維持する。
+        notes = [FakeNote(60, 0, 96)]
+        markers = [FakeMarker("C_(000)", 0)]
+        module, _ = load_script(notes, markers)
+        mistone = module["_STATE"]["mistones"][0]
+        destination = module["_choose_forced_chord_destination"](mistone, len(notes))
+        self.assertEqual(destination, 60)
+
     def test_selection_replaces_existing_selection(self):
         # 既存選択を解除し、検出されたノートだけを選択することを確認する。
         notes = [FakeNote(60, 0, selected=True), FakeNote(61, 96)]
@@ -373,6 +441,31 @@ class ProcessingTests(unittest.TestCase):
         form = module["createDialog"]()
         self.assertEqual(form.options, module["PROCESS_OPTIONS"])
         self.assertEqual(form.getInputValue(module["PROCESS_INPUT_NAME"]), 0)
+        self.assertFalse(form.getInputValue(module["FORCE_CHORD_INPUT_NAME"]))
+
+    def test_apply_uses_forced_chord_checkbox_for_move(self):
+        # 移動処理でチェックをオンにすると通常候補ではなくコード音へ強制する。
+        module, fake_flp = load_script(
+            [FakeNote(70, 0)],
+            [FakeMarker("C_(ad5)", 0)],
+        )
+        form = module["createDialog"]()
+        form.values[module["FORCE_CHORD_INPUT_NAME"]] = True
+        module["apply"](form)
+        self.assertEqual(fake_flp.score.notes[0].number, 72)
+
+    def test_force_checkbox_does_not_change_selection_operation(self):
+        # 選択処理では強制チェックを無視し、音程を変えず検出ノートだけを選択する。
+        module, fake_flp = load_script(
+            [FakeNote(70, 0)],
+            [FakeMarker("C_(ad5)", 0)],
+        )
+        form = module["createDialog"]()
+        form.values[module["PROCESS_INPUT_NAME"]] = 1
+        form.values[module["FORCE_CHORD_INPUT_NAME"]] = True
+        module["apply"](form)
+        self.assertEqual(fake_flp.score.notes[0].number, 70)
+        self.assertTrue(fake_flp.score.notes[0].selected)
 
 
 if __name__ == "__main__":

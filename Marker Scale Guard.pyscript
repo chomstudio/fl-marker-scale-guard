@@ -8,6 +8,7 @@ import flpianoroll as flp
 
 SCRIPT_NAME = "Marker Scale Guard"
 PROCESS_INPUT_NAME = "処理方法"
+FORCE_CHORD_INPUT_NAME = "コードノートに強制"
 PROCESS_OPTIONS = [
     "適切な位置に移動",
     "検出ノートを選択",
@@ -15,6 +16,7 @@ PROCESS_OPTIONS = [
 ]
 MIN_NOTE_NUMBER = 0
 MAX_NOTE_NUMBER = 131
+FORCE_CHORD_MAX_DISTANCE = 6
 CHROMATIC_SCALE_MASK = 0xFFF
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 NATURAL_PITCH_CLASSES = {
@@ -42,7 +44,7 @@ BASE_FIFTH_INTERVALS = {
 MARKER_PATTERN = re.compile(
     r"(?P<root>[A-G][#b]?)(?P<quality>dim|aug|m)?"
     r"(?P<modifier>M7|sus4|-5|6|7)?"
-    r"(?:_\((?P<context>[0-9A-Fa-f]{3}|[A-G][#b]?)\))?"
+    r"(?:_\((?P<context>[01]{12}|[0-9A-Fa-f]{3}|[A-G][#b]?)\))?"
 )
 
 
@@ -124,6 +126,8 @@ def _parse_marker_name(name, time, score_index):
 
     if context is None:
         scale_mask = CHROMATIC_SCALE_MASK
+    elif len(context) == 12:
+        scale_mask = int(context, 2)
     elif len(context) == 3:
         scale_mask = int(context, 16)
     else:
@@ -307,11 +311,40 @@ def _choose_destination(mistone, note_count):
     return None
 
 
-def _move_or_delete_mistones(mistones, note_count):
+def _choose_forced_chord_destination(mistone, note_count):
+    # 元音程から±6以内のコード構成音を距離順、同距離では高音側優先で検索する。
+    original_number = mistone["number"]
+    note_time = mistone["time"]
+    note_length = mistone["length"]
+    note_index = mistone["score_index"]
+    chord_pitch_classes = mistone["marker"]["chord_pitch_classes"]
+
+    for distance in range(FORCE_CHORD_MAX_DISTANCE + 1):
+        if distance == 0:
+            candidates = (original_number,)
+        else:
+            candidates = (original_number + distance, original_number - distance)
+
+        for candidate in candidates:
+            if not _is_note_number_valid(candidate):
+                continue
+            if candidate % 12 not in chord_pitch_classes:
+                continue
+            if not _has_collision(
+                note_index, candidate, note_time, note_length, note_count
+            ):
+                return candidate
+    return None
+
+
+def _move_or_delete_mistones(mistones, note_count, force_chord=False):
     # 仕様の処理順で移動先を確定し、移動不能ノートを最後に降順で削除する。
     delete_indices = []
     for mistone in mistones:
-        destination = _choose_destination(mistone, note_count)
+        if force_chord:
+            destination = _choose_forced_chord_destination(mistone, note_count)
+        else:
+            destination = _choose_destination(mistone, note_count)
         if destination is None:
             delete_indices.append(mistone["score_index"])
             continue
@@ -384,6 +417,7 @@ if _STATE is not None and _STATE["active_markers"] and _STATE["mistones"]:
         )
         form = flp.ScriptDialog(SCRIPT_NAME, description)
         form.addInputCombo(PROCESS_INPUT_NAME, PROCESS_OPTIONS, 0)
+        form.addInputCheckbox(FORCE_CHORD_INPUT_NAME, False)
         return form
 
 
@@ -392,8 +426,9 @@ if _STATE is not None and _STATE["active_markers"] and _STATE["mistones"]:
         try:
             process_index = int(form.getInputValue(PROCESS_INPUT_NAME))
             if process_index == 0:
+                force_chord = bool(form.getInputValue(FORCE_CHORD_INPUT_NAME))
                 _move_or_delete_mistones(
-                    _STATE["mistones"], _STATE["note_count"]
+                    _STATE["mistones"], _STATE["note_count"], force_chord
                 )
             elif process_index == 1:
                 _select_mistones(_STATE["mistones"], _STATE["note_count"])
@@ -403,4 +438,3 @@ if _STATE is not None and _STATE["active_markers"] and _STATE["mistones"]:
                 _log("未対応の処理方法が指定されました: " + repr(process_index))
         except Exception as error:
             _log("処理中に予期しない例外が発生しました: " + repr(error))
-
