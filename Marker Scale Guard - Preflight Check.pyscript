@@ -1,0 +1,198 @@
+"""Marker Scale Guardの実装前にFL Studioの実機挙動を確認するスクリプト。"""
+
+import flpianoroll as flp
+
+
+SCRIPT_NAME = "Marker Scale Guard - Preflight Check"
+PREVIEW_CHECKBOX = "確認用変更をプレビュー"
+DOCUMENTED_MAX_NOTE = 131
+
+
+def _read_score_snapshot():
+    # createDialog()より前でもscoreを走査できるか確認するため、現在の内容を複製せず記録する。
+    # FL Studio側の値が走査中に変化しても表示が矛盾しないよう、件数は最初に一度だけ取得する。
+    note_count = flp.score.noteCount
+    marker_count = flp.score.markerCount
+
+    notes = []
+    for index in range(note_count):
+        note = flp.score.getNote(index)
+        try:
+            selected = bool(note.selected)
+            selected_error = None
+        except Exception as error:
+            selected = None
+            selected_error = repr(error)
+        notes.append(
+            {
+                "index": index,
+                "number": note.number,
+                "time": note.time,
+                "length": note.length,
+                "selected": selected,
+                "selected_error": selected_error,
+            }
+        )
+
+    markers = []
+    for index in range(marker_count):
+        marker = flp.score.getMarker(index)
+        markers.append(
+            {
+                "index": index,
+                "name": marker.name,
+                "time": marker.time,
+            }
+        )
+
+    return {
+        "note_count": note_count,
+        "marker_count": marker_count,
+        "notes": notes,
+        "markers": markers,
+        "ppq": flp.score.PPQ,
+    }
+
+
+def _format_marker_signature(markers):
+    # チャンネル間で比較しやすいよう、マーカーを「時刻:名前」の一行へ整形する。
+    if not markers:
+        return "<マーカーなし>"
+    return " | ".join(
+        "{0}:{1}".format(marker["time"], marker["name"]) for marker in markers
+    )
+
+
+def _calculate_test_note_time(snapshot):
+    # 既存ノートと重なりにくいよう、最後のノートの終端から1拍後を使用する。
+    if not snapshot["notes"]:
+        return snapshot["ppq"]
+    last_end = max(note["time"] + note["length"] for note in snapshot["notes"])
+    return last_end + snapshot["ppq"]
+
+
+def _log(message):
+    # 検証結果を見つけやすくするため、すべてのログへ共通の接頭辞を付ける。
+    flp.Utils.log("[MSG Preflight] " + message)
+
+
+# この走査は意図的にcreateDialog()の定義より前で実行する。
+# ここで例外が起きずダイアログまで表示されれば、仕様書14.2の確認に成功したことになる。
+_PRE_DIALOG_SNAPSHOT = _read_score_snapshot()
+_MARKER_SIGNATURE = _format_marker_signature(_PRE_DIALOG_SNAPSHOT["markers"])
+_TEST_NOTE_TIME = _calculate_test_note_time(_PRE_DIALOG_SNAPSHOT)
+
+_log("[PASS候補] createDialog()定義前にノートとマーカーを走査しました。")
+_log(
+    "事前走査: notes={0}, markers={1}, PPQ={2}".format(
+        _PRE_DIALOG_SNAPSHOT["note_count"],
+        _PRE_DIALOG_SNAPSHOT["marker_count"],
+        _PRE_DIALOG_SNAPSHOT["ppq"],
+    )
+)
+_log("マーカー署名: " + _MARKER_SIGNATURE)
+
+
+def createDialog():
+    # 事前走査の結果を表示し、変更を明示的に有効化するチェックボックスを用意する。
+    description = (
+        "createDialog()より前の走査に成功しました。\n"
+        "ノート数: {0} / マーカー数: {1}\n"
+        "マーカー署名はDebugging logで確認してください。\n"
+        "変更テスト時はチェックを入れ、結果を見た後に必ずCancelしてください。"
+    ).format(
+        _PRE_DIALOG_SNAPSHOT["note_count"],
+        _PRE_DIALOG_SNAPSHOT["marker_count"],
+    )
+    form = flp.ScriptDialog(SCRIPT_NAME, description)
+    form.addInputCheckbox(PREVIEW_CHECKBOX, False)
+    return form
+
+
+def _change_first_note_for_preview():
+    # 先頭ノートのnumberとselectedを直接変更し、再取得した値で反映を確認する。
+    if not _PRE_DIALOG_SNAPSHOT["notes"]:
+        _log("[SKIP] 既存ノートがないため、number/selectedの変更テストは未実施です。")
+        return False
+
+    original = _PRE_DIALOG_SNAPSHOT["notes"][0]
+    changed_number = (
+        original["number"] + 1
+        if original["number"] < DOCUMENTED_MAX_NOTE
+        else original["number"] - 1
+    )
+    changed_selected = not original["selected"]
+
+    try:
+        note = flp.score.getNote(0)
+        note.number = changed_number
+        note.selected = changed_selected
+
+        changed_note = flp.score.getNote(0)
+        succeeded = (
+            changed_note.number == changed_number
+            and bool(changed_note.selected) == changed_selected
+        )
+    except Exception as error:
+        _log("[FAIL] number/selectedの直接変更中に例外が発生しました: " + repr(error))
+        return False
+    if succeeded:
+        _log(
+            "[PASS候補] getNote(0)のnumberを{0}から{1}へ、selectedを{2}から{3}へ直接変更しました。".format(
+                original["number"],
+                changed_number,
+                original["selected"],
+                changed_selected,
+            )
+        )
+    else:
+        _log("[FAIL] getNote(0)のnumberまたはselectedを直接変更できませんでした。")
+    return succeeded
+
+
+def _add_max_note_for_preview():
+    # 公式上限のノート番号131を追加し、scoreから同じ値を読み戻せるか確認する。
+    try:
+        test_note = flp.Note()
+        test_note.number = DOCUMENTED_MAX_NOTE
+        test_note.time = _TEST_NOTE_TIME
+        test_note.length = max(1, _PRE_DIALOG_SNAPSHOT["ppq"])
+        test_note.velocity = 0.8
+        test_note.color = 15
+        test_note.selected = True
+        flp.score.addNote(test_note)
+
+        found = False
+        for index in range(flp.score.noteCount):
+            note = flp.score.getNote(index)
+            if note.number == DOCUMENTED_MAX_NOTE and note.time == _TEST_NOTE_TIME:
+                found = True
+                break
+    except Exception as error:
+        _log("[FAIL] 上限ノートの追加または読み戻し中に例外が発生しました: " + repr(error))
+        return False
+
+    if found:
+        _log(
+            "[PASS候補] ノート番号上限{0}をscoreへ追加し、同じ番号で読み戻しました。".format(
+                DOCUMENTED_MAX_NOTE
+            )
+        )
+    else:
+        _log(
+            "[FAIL] ノート番号{0}をscoreへ追加後に読み戻せませんでした。".format(
+                DOCUMENTED_MAX_NOTE
+            )
+        )
+    return found
+
+
+def apply(form):
+    # チェック時だけ変更をプレビューし、未チェック時はピアノロールへ一切触れない。
+    if not form.getInputValue(PREVIEW_CHECKBOX):
+        _log("情報表示のみです。ピアノロールは変更していません。")
+        return
+
+    _log("変更プレビューを開始します。確認後はOKではなくCancelを押してください。")
+    _change_first_note_for_preview()
+    _add_max_note_for_preview()

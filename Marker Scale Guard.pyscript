@@ -1,0 +1,406 @@
+"""パターンマーカーで指定されたスケール外ノートを検出・処理する。"""
+
+import bisect
+import re
+
+import flpianoroll as flp
+
+
+SCRIPT_NAME = "Marker Scale Guard"
+PROCESS_INPUT_NAME = "処理方法"
+PROCESS_OPTIONS = [
+    "適切な位置に移動",
+    "検出ノートを選択",
+    "検出ノートを削除",
+]
+MIN_NOTE_NUMBER = 0
+MAX_NOTE_NUMBER = 131
+CHROMATIC_SCALE_MASK = 0xFFF
+NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+NATURAL_PITCH_CLASSES = {
+    "C": 0,
+    "D": 2,
+    "E": 4,
+    "F": 5,
+    "G": 7,
+    "A": 9,
+    "B": 11,
+}
+MAJOR_SCALE_INTERVALS = (0, 2, 4, 5, 7, 9, 11)
+BASE_CHORD_INTERVALS = {
+    "": (0, 4, 7),
+    "m": (0, 3, 7),
+    "dim": (0, 3, 6),
+    "aug": (0, 4, 8),
+}
+BASE_FIFTH_INTERVALS = {
+    "": 7,
+    "m": 7,
+    "dim": 6,
+    "aug": 8,
+}
+MARKER_PATTERN = re.compile(
+    r"(?P<root>[A-G][#b]?)(?P<quality>dim|aug|m)?"
+    r"(?P<modifier>M7|sus4|-5|6|7)?"
+    r"(?:_\((?P<context>[0-9A-Fa-f]{3}|[A-G][#b]?)\))?"
+)
+
+
+def _log(message):
+    # FL StudioのDebugging logで本スクリプトの出力を識別できるようにする。
+    flp.Utils.log("[Marker Scale Guard] " + message)
+
+
+def _pitch_class_from_name(note_name):
+    # ASCII音名を異名同音込みのピッチクラスへ変換する。
+    natural = NATURAL_PITCH_CLASSES[note_name[0]]
+    if len(note_name) == 1:
+        return natural
+    if note_name[1] == "#":
+        return (natural + 1) % 12
+    return (natural - 1) % 12
+
+
+def _scale_mask_from_pitch_classes(pitch_classes):
+    # Cをbit 11、Bをbit 0として12音の集合をビットマスクへ変換する。
+    mask = 0
+    for pitch_class in pitch_classes:
+        mask |= 1 << (11 - pitch_class)
+    return mask
+
+
+def _major_scale_mask(root_pitch_class):
+    # 指定された主音のメジャースケールを12ビットのスケール情報へ変換する。
+    pitch_classes = (
+        (root_pitch_class + interval) % 12 for interval in MAJOR_SCALE_INTERVALS
+    )
+    return _scale_mask_from_pitch_classes(pitch_classes)
+
+
+def _scale_contains(scale_mask, pitch_class):
+    # 仕様書で定めたビット順に従い、指定音がスケールに含まれるか調べる。
+    return bool(scale_mask & (1 << (11 - pitch_class)))
+
+
+def _build_chord_pitch_classes(root_pitch_class, quality, modifier):
+    # 基本コードへ修飾規則を機械的に適用し、構成音のピッチクラスを返す。
+    intervals = set(BASE_CHORD_INTERVALS[quality])
+
+    if modifier == "6":
+        intervals.add(9)
+    elif modifier == "7":
+        intervals.add(10)
+    elif modifier == "M7":
+        intervals.add(11)
+    elif modifier == "sus4":
+        intervals.discard(3)
+        intervals.discard(4)
+        intervals.add(5)
+    elif modifier == "-5":
+        fifth = BASE_FIFTH_INTERVALS[quality]
+        intervals.discard(fifth)
+        intervals.add(fifth - 1)
+
+    return {(root_pitch_class + interval) % 12 for interval in intervals}
+
+
+def _parse_marker_name(name, time, score_index):
+    # マーカー名を完全一致で解析し、成功結果または無効理由を返す。
+    if not isinstance(name, str):
+        return None, "マーカー名が文字列ではありません"
+
+    match = MARKER_PATTERN.fullmatch(name)
+    if match is None:
+        return None, "対応するマーカー形式ではありません"
+
+    root_name = match.group("root")
+    quality = match.group("quality") or ""
+    modifier = match.group("modifier") or ""
+    context = match.group("context")
+    root_pitch_class = _pitch_class_from_name(root_name)
+    chord_pitch_classes = _build_chord_pitch_classes(
+        root_pitch_class, quality, modifier
+    )
+
+    if context is None:
+        scale_mask = CHROMATIC_SCALE_MASK
+    elif len(context) == 3:
+        scale_mask = int(context, 16)
+    else:
+        scale_mask = _major_scale_mask(_pitch_class_from_name(context))
+
+    return (
+        {
+            "name": name,
+            "time": time,
+            "score_index": score_index,
+            "root_pitch_class": root_pitch_class,
+            "chord_pitch_classes": chord_pitch_classes,
+            "scale_mask": scale_mask,
+        },
+        None,
+    )
+
+
+def _read_markers(marker_count):
+    # 全マーカーを走査し、無効なものだけを理由付きでログへ記録する。
+    valid_markers = []
+    for index in range(marker_count):
+        marker = flp.score.getMarker(index)
+        parsed, reason = _parse_marker_name(marker.name, marker.time, index)
+        if parsed is None:
+            _log(
+                "無効なマーカーを無視しました: index={0}, tick={1}, name={2!r}, reason={3}".format(
+                    index,
+                    marker.time,
+                    marker.name,
+                    reason,
+                )
+            )
+            continue
+        valid_markers.append(parsed)
+    return valid_markers
+
+
+def _build_active_markers(valid_markers):
+    # 同一時刻ではscore内で後のマーカーだけを残し、時刻順の区間境界を作る。
+    markers_by_time = {}
+    for marker in valid_markers:
+        markers_by_time[marker["time"]] = marker
+    return [markers_by_time[time] for time in sorted(markers_by_time)]
+
+
+def _marker_for_note_time(note_time, active_markers, marker_times):
+    # ノート開始時刻以前で最も新しい有効マーカーを二分探索で取得する。
+    marker_position = bisect.bisect_right(marker_times, note_time) - 1
+    if marker_position < 0:
+        return None
+    return active_markers[marker_position]
+
+
+def _read_note_snapshots(note_count):
+    # ダイアログ生成前のノート情報を、検出と決定的な処理順のために保存する。
+    snapshots = []
+    for index in range(note_count):
+        note = flp.score.getNote(index)
+        snapshots.append(
+            {
+                "score_index": index,
+                "number": note.number,
+                "time": note.time,
+                "length": note.length,
+            }
+        )
+    return snapshots
+
+
+def _detect_mistones(note_snapshots, active_markers):
+    # ノート開始位置側のスケールだけを使用してスケール外ノートを検出する。
+    marker_times = [marker["time"] for marker in active_markers]
+    mistones = []
+    for note in note_snapshots:
+        marker = _marker_for_note_time(note["time"], active_markers, marker_times)
+        if marker is None:
+            continue
+        if _scale_contains(marker["scale_mask"], note["number"] % 12):
+            continue
+        detected = dict(note)
+        detected["marker"] = marker
+        mistones.append(detected)
+
+    mistones.sort(key=lambda note: (note["time"], note["score_index"]))
+    return mistones
+
+
+def _find_marker_conflicts(valid_markers):
+    # コード構成音のうち指定スケール外にある音をマーカーごとに収集する。
+    conflicts = []
+    for marker in valid_markers:
+        outside_pitch_classes = sorted(
+            pitch_class
+            for pitch_class in marker["chord_pitch_classes"]
+            if not _scale_contains(marker["scale_mask"], pitch_class)
+        )
+        if outside_pitch_classes:
+            conflicts.append((marker, outside_pitch_classes))
+    return conflicts
+
+
+def _show_marker_conflict_warning(conflicts):
+    # 複数のコード・スケール矛盾を1つの警告メッセージへまとめて表示する。
+    if not conflicts:
+        return
+
+    lines = ["コードとスケールの指定に矛盾があります。", ""]
+    for marker, pitch_classes in conflicts:
+        note_names = ", ".join(NOTE_NAMES[pitch_class] for pitch_class in pitch_classes)
+        lines.append(
+            "- {0} / tick {1}: {2} が指定スケールに含まれていません。".format(
+                marker["name"], marker["time"], note_names
+            )
+        )
+    lines.extend(["", "マーカーは有効なものとして処理を続行します。"])
+    flp.Utils.ShowMessage("\n".join(lines))
+
+
+def _intervals_overlap(start_a, length_a, start_b, length_b):
+    # 半開区間として扱い、終了時刻と開始時刻が同じだけの場合は衝突から除外する。
+    end_a = start_a + length_a
+    end_b = start_b + length_b
+    return max(start_a, start_b) < min(end_a, end_b)
+
+
+def _has_collision(note_index, candidate_number, note_time, note_length, note_count):
+    # 現在のscore上で、移動先と同音程かつ発音区間が重なる別ノートを探す。
+    for other_index in range(note_count):
+        if other_index == note_index:
+            continue
+        other = flp.score.getNote(other_index)
+        if other.number != candidate_number:
+            continue
+        if _intervals_overlap(note_time, note_length, other.time, other.length):
+            return True
+    return False
+
+
+def _is_note_number_valid(note_number):
+    # 実機確認済みのピアノロール音域へ候補を限定する。
+    return MIN_NOTE_NUMBER <= note_number <= MAX_NOTE_NUMBER
+
+
+def _choose_destination(mistone, note_count):
+    # コード隣接音を優先し、その後に最寄りの非コード・スケール音を検索する。
+    original_number = mistone["number"]
+    note_time = mistone["time"]
+    note_length = mistone["length"]
+    note_index = mistone["score_index"]
+    marker = mistone["marker"]
+    chord_pitch_classes = marker["chord_pitch_classes"]
+
+    for candidate in (original_number + 1, original_number - 1):
+        if not _is_note_number_valid(candidate):
+            continue
+        if candidate % 12 not in chord_pitch_classes:
+            continue
+        if not _has_collision(
+            note_index, candidate, note_time, note_length, note_count
+        ):
+            return candidate
+
+    maximum_distance = max(
+        original_number - MIN_NOTE_NUMBER,
+        MAX_NOTE_NUMBER - original_number,
+    )
+    for distance in range(1, maximum_distance + 1):
+        for candidate in (original_number + distance, original_number - distance):
+            if not _is_note_number_valid(candidate):
+                continue
+            pitch_class = candidate % 12
+            if pitch_class in chord_pitch_classes:
+                continue
+            if not _scale_contains(marker["scale_mask"], pitch_class):
+                continue
+            if not _has_collision(
+                note_index, candidate, note_time, note_length, note_count
+            ):
+                return candidate
+    return None
+
+
+def _move_or_delete_mistones(mistones, note_count):
+    # 仕様の処理順で移動先を確定し、移動不能ノートを最後に降順で削除する。
+    delete_indices = []
+    for mistone in mistones:
+        destination = _choose_destination(mistone, note_count)
+        if destination is None:
+            delete_indices.append(mistone["score_index"])
+            continue
+        flp.score.getNote(mistone["score_index"]).number = destination
+
+    for index in sorted(delete_indices, reverse=True):
+        flp.score.deleteNote(index)
+
+
+def _select_mistones(mistones, note_count):
+    # 既存選択をすべて解除してから、検出時点のミストーンだけを選択する。
+    for index in range(note_count):
+        flp.score.getNote(index).selected = False
+    for mistone in mistones:
+        flp.score.getNote(mistone["score_index"]).selected = True
+
+
+def _delete_mistones(mistones):
+    # インデックスのずれを防ぐため、検出ノートをscoreインデックスの降順で削除する。
+    indices = sorted(
+        (mistone["score_index"] for mistone in mistones), reverse=True
+    )
+    for index in indices:
+        flp.score.deleteNote(index)
+
+
+def _prepare_script_state():
+    # 件数を走査前に固定し、ダイアログ生成前に必要な解析と検出をすべて完了する。
+    note_count = flp.score.noteCount
+    marker_count = flp.score.markerCount
+    valid_markers = _read_markers(marker_count)
+    active_markers = _build_active_markers(valid_markers)
+    note_snapshots = _read_note_snapshots(note_count)
+    mistones = _detect_mistones(note_snapshots, active_markers)
+    conflicts = _find_marker_conflicts(valid_markers)
+    return {
+        "note_count": note_count,
+        "marker_count": marker_count,
+        "valid_markers": valid_markers,
+        "active_markers": active_markers,
+        "mistones": mistones,
+        "conflicts": conflicts,
+    }
+
+
+try:
+    _STATE = _prepare_script_state()
+except Exception as error:
+    _STATE = None
+    _log("起動時の解析で予期しない例外が発生しました: " + repr(error))
+    flp.Utils.ShowMessage(
+        "Marker Scale Guardの解析中にエラーが発生しました。\n\n" + repr(error)
+    )
+
+
+if _STATE is not None:
+    _show_marker_conflict_warning(_STATE["conflicts"])
+
+
+if _STATE is not None and _STATE["active_markers"] and not _STATE["mistones"]:
+    flp.Utils.ShowMessage("対象のノートは見つかりませんでした。")
+
+
+if _STATE is not None and _STATE["active_markers"] and _STATE["mistones"]:
+
+    def createDialog():
+        # 検出数を説明へ表示し、仕様で定めた3種類の処理方法を選択可能にする。
+        description = "検出されたミストーン: {0}件\n処理方法を選択してください。".format(
+            len(_STATE["mistones"])
+        )
+        form = flp.ScriptDialog(SCRIPT_NAME, description)
+        form.addInputCombo(PROCESS_INPUT_NAME, PROCESS_OPTIONS, 0)
+        return form
+
+
+    def apply(form):
+        # プレビュー更新ごとに、選択された処理を事前検出済みのノートだけへ適用する。
+        try:
+            process_index = int(form.getInputValue(PROCESS_INPUT_NAME))
+            if process_index == 0:
+                _move_or_delete_mistones(
+                    _STATE["mistones"], _STATE["note_count"]
+                )
+            elif process_index == 1:
+                _select_mistones(_STATE["mistones"], _STATE["note_count"])
+            elif process_index == 2:
+                _delete_mistones(_STATE["mistones"])
+            else:
+                _log("未対応の処理方法が指定されました: " + repr(process_index))
+        except Exception as error:
+            _log("処理中に予期しない例外が発生しました: " + repr(error))
+
