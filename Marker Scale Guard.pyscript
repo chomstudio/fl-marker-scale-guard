@@ -402,6 +402,7 @@ def _prepare_script_state():
     return {
         "note_count": note_count,
         "marker_count": marker_count,
+        "invalid_marker_count": marker_count - len(valid_markers),
         "valid_markers": valid_markers,
         "active_markers": active_markers,
         "mistones": mistones,
@@ -424,31 +425,25 @@ if _STATE is not None:
     _show_marker_conflict_warning(_STATE["conflicts"])
 
 
-if (
-    _STATE is not None
-    and _STATE["active_markers"]
-    and not _STATE["mistones"]
-    and not _STATE["non_chord_notes"]
-):
-    flp.Utils.ShowMessage("対象のノートは見つかりませんでした。")
-
-
-if (
-    _STATE is not None
-    and _STATE["active_markers"]
-    and (_STATE["mistones"] or _STATE["non_chord_notes"])
-):
+if _STATE is not None:
 
     def createDialog():
-        # 検出数を説明へ表示し、仕様で定めた3種類の処理方法を選択可能にする。
+        # マーカーと検出結果を常に表示し、対象がある場合は処理方法を選択可能にする。
         description = (
-            "検出されたミストーン: {0}件\n"
-            "コード構成音ではないノート: {1}件\n"
-            "処理方法を選択してください。"
+            "対象マーカー数: {0}件\n"
+            "対象にならないマーカー数: {1}件\n"
+            "検出されたミストーン: {2}件\n"
+            "コード構成音ではないノート: {3}件"
         ).format(
+            len(_STATE["valid_markers"]),
+            _STATE["invalid_marker_count"],
             len(_STATE["mistones"]),
             len(_STATE["non_chord_notes"]),
         )
+        if not _STATE["mistones"]:
+            description += "\n\n対象のノートはみつかりませんでした。"
+        else:
+            description += "\n\n処理方法を選択してください。"
         form = flp.ScriptDialog(SCRIPT_NAME, description)
         form.addInputCombo(PROCESS_INPUT_NAME, PROCESS_OPTIONS, 0)
         form.addInputCheckbox(FORCE_CHORD_INPUT_NAME, False)

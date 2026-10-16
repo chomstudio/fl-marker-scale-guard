@@ -284,14 +284,36 @@ class DetectionTests(unittest.TestCase):
         self.assertTrue({7, 11}.issubset(target_pitch_classes))
         self.assertTrue({0, 4, 9}.isdisjoint(target_pitch_classes))
 
-    def test_no_valid_marker_finishes_without_dialog_or_message(self):
-        # 有効マーカーがない場合、処理用関数も通常メッセージも生成しないことを確認する。
+    def test_no_valid_marker_still_creates_dialog_with_counts(self):
+        # 有効マーカーがなくても、対象数と対象外数を示すダイアログを生成する。
         module, fake_flp = load_script(
             [FakeNote(61, 0)],
             [FakeMarker("invalid", 0)],
         )
-        self.assertNotIn("createDialog", module)
-        self.assertNotIn("apply", module)
+        form = module["createDialog"]()
+        self.assertIn("対象マーカー数: 0件", form.description)
+        self.assertIn("対象にならないマーカー数: 1件", form.description)
+        self.assertIn("対象のノートはみつかりませんでした。", form.description)
+        self.assertIn("apply", module)
+        self.assertEqual(fake_flp.Utils.messages, [])
+
+    def test_no_markers_creates_dialog_with_zero_counts(self):
+        # マーカー自体がない場合も、両方のマーカー数を0件として表示する。
+        module, _ = load_script([FakeNote(61, 0)], [])
+        form = module["createDialog"]()
+        self.assertIn("対象マーカー数: 0件", form.description)
+        self.assertIn("対象にならないマーカー数: 0件", form.description)
+
+    def test_no_mistones_reports_result_in_dialog(self):
+        # 有効マーカーがあってミストーンがない場合、結果をダイアログへ表示する。
+        module, fake_flp = load_script(
+            [FakeNote(60, 0)],
+            [FakeMarker("C_ad5", 0)],
+        )
+        form = module["createDialog"]()
+        self.assertIn("対象マーカー数: 1件", form.description)
+        self.assertIn("対象にならないマーカー数: 0件", form.description)
+        self.assertIn("対象のノートはみつかりませんでした。", form.description)
         self.assertEqual(fake_flp.Utils.messages, [])
 
     def test_c_major_detects_only_outside_pitch_classes(self):
@@ -310,7 +332,7 @@ class DetectionTests(unittest.TestCase):
             FakeMarker("E_C", 200),
         ]
         _, fake_flp = load_script([], markers)
-        self.assertEqual(len(fake_flp.Utils.messages), 2)
+        self.assertEqual(len(fake_flp.Utils.messages), 1)
         warning = fake_flp.Utils.messages[0]
         self.assertIn("D7_C / tick 100: F#", warning)
         self.assertIn("E_C / tick 200: G#", warning)
