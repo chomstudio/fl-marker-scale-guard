@@ -149,6 +149,8 @@ class MarkerParsingTests(unittest.TestCase):
             "CdimM7_fff",
             "Caugsus4_fff",
             "Cm-5_fff",
+            "G7sus4_fff",
+            "Bm7-5_fff",
             "Bb7_ad5",
             "Am_101011010101",
             "F#_G",
@@ -179,6 +181,9 @@ class MarkerParsingTests(unittest.TestCase):
             "C_(ad5)",
             "C_(C)",
             "C_(101011010101)",
+            "Csus47_fff",
+            "C76_fff",
+            "Csus4-5_fff",
             "E_C[F#]",
             "E_C[F-]",
             "E_C[C+C+]",
@@ -246,9 +251,13 @@ class MarkerParsingTests(unittest.TestCase):
         sus4, _ = parse("Cmsus4_fff", 0, 0)
         diminished_fifth, _ = parse("Cdim-5_fff", 0, 0)
         minor_seventh, _ = parse("Cm7_fff", 0, 0)
+        seventh_suspended, _ = parse("G7sus4_fff", 0, 0)
+        half_diminished, _ = parse("Bm7-5_fff", 0, 0)
         self.assertEqual(sus4["chord_pitch_classes"], {0, 5, 7})
         self.assertEqual(diminished_fifth["chord_pitch_classes"], {0, 3, 5})
         self.assertEqual(minor_seventh["chord_pitch_classes"], {0, 3, 7, 10})
+        self.assertEqual(seventh_suspended["chord_pitch_classes"], {0, 2, 5, 7})
+        self.assertEqual(half_diminished["chord_pitch_classes"], {2, 5, 9, 11})
 
 
 class DetectionTests(unittest.TestCase):
