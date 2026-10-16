@@ -139,16 +139,16 @@ class MarkerParsingTests(unittest.TestCase):
         # 基本品質と各修飾が仕様どおり受理されることを確認する。
         module, _ = load_script()
         valid_names = [
-            "C",
-            "Cm",
-            "Cdim",
-            "Caug",
-            "C6",
-            "Cm7",
-            "CM7",
-            "CdimM7",
-            "Caugsus4",
-            "Cm-5",
+            "C_fff",
+            "Cm_fff",
+            "Cdim_fff",
+            "Caug_fff",
+            "C6_fff",
+            "Cm7_fff",
+            "CM7_fff",
+            "CdimM7_fff",
+            "Caugsus4_fff",
+            "Cm-5_fff",
             "Bb7_ad5",
             "Am_101011010101",
             "F#_G",
@@ -163,6 +163,8 @@ class MarkerParsingTests(unittest.TestCase):
         # 空白、テンション、非ASCII表記、情報の桁違いを拒否することを確認する。
         module, _ = load_script()
         invalid_names = [
+            "C",
+            "Cm7",
             " C",
             "C ",
             "C9",
@@ -199,9 +201,9 @@ class MarkerParsingTests(unittest.TestCase):
         # sus4と減5度の置換、および7度追加をピッチクラスで確認する。
         module, _ = load_script()
         parse = module["_parse_marker_name"]
-        sus4, _ = parse("Cmsus4", 0, 0)
-        diminished_fifth, _ = parse("Cdim-5", 0, 0)
-        minor_seventh, _ = parse("Cm7", 0, 0)
+        sus4, _ = parse("Cmsus4_fff", 0, 0)
+        diminished_fifth, _ = parse("Cdim-5_fff", 0, 0)
+        minor_seventh, _ = parse("Cm7_fff", 0, 0)
         self.assertEqual(sus4["chord_pitch_classes"], {0, 5, 7})
         self.assertEqual(diminished_fifth["chord_pitch_classes"], {0, 3, 5})
         self.assertEqual(minor_seventh["chord_pitch_classes"], {0, 3, 7, 10})
@@ -253,11 +255,11 @@ class DetectionTests(unittest.TestCase):
         detected_indices = [note["score_index"] for note in module["_STATE"]["mistones"]]
         self.assertEqual(detected_indices, [1, 2])
 
-    def test_chromatic_marker_detects_nothing(self):
-        # コード名だけならミストーンはなくても、非コード音用のダイアログは表示する。
+    def test_explicit_chromatic_marker_detects_nothing(self):
+        # 明示的なfff指定ではミストーンを検出せず、非コード音は記録する。
         module, fake_flp = load_script(
             [FakeNote(61, 0)],
-            [FakeMarker("C", 0)],
+            [FakeMarker("C_fff", 0)],
         )
         self.assertEqual(module["_STATE"]["mistones"], [])
         self.assertEqual(len(module["_STATE"]["non_chord_notes"]), 1)
@@ -285,10 +287,10 @@ class DetectionTests(unittest.TestCase):
         self.assertTrue({0, 4, 9}.isdisjoint(target_pitch_classes))
 
     def test_no_valid_marker_still_creates_dialog_with_counts(self):
-        # 有効マーカーがなくても、対象数と対象外数を示すダイアログを生成する。
+        # コード名だけのマーカーも対象外として数え、結果ダイアログを生成する。
         module, fake_flp = load_script(
             [FakeNote(61, 0)],
-            [FakeMarker("invalid", 0)],
+            [FakeMarker("C", 0)],
         )
         form = module["createDialog"]()
         self.assertIn("対象マーカー数: 0件", form.description)

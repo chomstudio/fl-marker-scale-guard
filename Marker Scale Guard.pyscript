@@ -17,7 +17,6 @@ PROCESS_OPTIONS = [
 MIN_NOTE_NUMBER = 0
 MAX_NOTE_NUMBER = 131
 FORCE_CHORD_MAX_DISTANCE = 6
-CHROMATIC_SCALE_MASK = 0xFFF
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 NATURAL_PITCH_CLASSES = {
     "C": 0,
@@ -119,14 +118,15 @@ def _parse_marker_name(name, time, score_index):
     quality = match.group("quality") or ""
     modifier = match.group("modifier") or ""
     context = match.group("context")
+    if context is None:
+        return None, "キーまたはスケール情報が指定されていません"
+
     root_pitch_class = _pitch_class_from_name(root_name)
     chord_pitch_classes = _build_chord_pitch_classes(
         root_pitch_class, quality, modifier
     )
 
-    if context is None:
-        scale_mask = CHROMATIC_SCALE_MASK
-    elif len(context) == 12:
+    if len(context) == 12:
         scale_mask = int(context, 2)
     elif len(context) == 3:
         scale_mask = int(context, 16)
