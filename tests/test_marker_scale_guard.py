@@ -152,6 +152,8 @@ class MarkerParsingTests(unittest.TestCase):
             "Bb7_ad5",
             "Am_101011010101",
             "F#_G",
+            "E_C[G+]",
+            "E_C[C+F+]",
         ]
         for name in valid_names:
             with self.subTest(name=name):
@@ -177,6 +179,9 @@ class MarkerParsingTests(unittest.TestCase):
             "C_(ad5)",
             "C_(C)",
             "C_(101011010101)",
+            "E_C[F#]",
+            "E_C[F-]",
+            "E_C[C+C+]",
         ]
         for name in invalid_names:
             with self.subTest(name=name):
@@ -196,6 +201,43 @@ class MarkerParsingTests(unittest.TestCase):
         self.assertEqual(c_binary["scale_mask"], 0xAD5)
         self.assertEqual(g_key["scale_mask"], 0xAB5)
         self.assertEqual(g_key["scale_mask"], g_hex["scale_mask"])
+
+    def test_shifted_major_scale_matches_binary_mask(self):
+        # CメジャーのGを半音上げると、指定された2進数表記と同じになる。
+        module, _ = load_script()
+        shifted, reason = module["_parse_marker_name"]("E_C[G+]", 0, 0)
+        self.assertIsNone(reason)
+        self.assertEqual(shifted["scale_mask"], int("101011001101", 2))
+
+    def test_multiple_scale_shifts_are_applied(self):
+        # 複数の構成音を1つの角括弧内でそれぞれ半音移動できる。
+        module, _ = load_script()
+        shifted, reason = module["_parse_marker_name"]("E_C[C+F+]", 0, 0)
+        self.assertIsNone(reason)
+        expected = {1, 2, 4, 6, 7, 9, 11}
+        actual = {
+            pitch_class
+            for pitch_class in range(12)
+            if module["_scale_contains"](shifted["scale_mask"], pitch_class)
+        }
+        self.assertEqual(actual, expected)
+
+    def test_invalid_scale_shifts_report_specific_reasons(self):
+        # スケール外音、衝突、同じ元音の重複指定を理由付きで拒否する。
+        module, _ = load_script()
+        cases = {
+            "E_C[F#]": "+または-が指定されていません",
+            "E_C[F]": "+または-が指定されていません",
+            "E_C[F#+]": "元のメジャースケールに含まれません",
+            "E_C[F#-]": "元のメジャースケールに含まれません",
+            "E_C[F-]": "別のスケール構成音と重なります",
+            "E_C[C+C+]": "重複しています",
+        }
+        for name, expected_reason in cases.items():
+            with self.subTest(name=name):
+                parsed, reason = module["_parse_marker_name"](name, 0, 0)
+                self.assertIsNone(parsed)
+                self.assertIn(expected_reason, reason)
 
     def test_chord_modifiers_follow_mechanical_rules(self):
         # sus4と減5度の置換、および7度追加をピッチクラスで確認する。
@@ -305,6 +347,19 @@ class DetectionTests(unittest.TestCase):
         form = module["createDialog"]()
         self.assertIn("対象マーカー数: 0件", form.description)
         self.assertIn("対象にならないマーカー数: 0件", form.description)
+
+    def test_invalid_scale_shift_is_counted_and_logged(self):
+        # 不正な簡易スケール変更を対象外として数え、具体的な理由をログへ残す。
+        module, fake_flp = load_script([], [FakeMarker("E_C[F#+]", 0)])
+        form = module["createDialog"]()
+        self.assertIn("対象マーカー数: 0件", form.description)
+        self.assertIn("対象にならないマーカー数: 1件", form.description)
+        self.assertTrue(
+            any(
+                "元のメジャースケールに含まれません" in message
+                for message in fake_flp.Utils.logs
+            )
+        )
 
     def test_no_mistones_reports_result_in_dialog(self):
         # 有効マーカーがあってミストーンがない場合、結果をダイアログへ表示する。

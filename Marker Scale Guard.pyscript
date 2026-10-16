@@ -43,8 +43,10 @@ BASE_FIFTH_INTERVALS = {
 MARKER_PATTERN = re.compile(
     r"(?P<root>[A-G][#b]?)(?P<quality>dim|aug|m)?"
     r"(?P<modifier>M7|sus4|-5|6|7)?"
-    r"(?:_(?P<context>[01]{12}|[0-9A-Fa-f]{3}|[A-G][#b]?))?"
+    r"(?:_(?P<context>[01]{12}|[0-9A-Fa-f]{3}|"
+    r"[A-G][#b]?(?:\[(?:[A-G][#b]?[+-]?)+\])?))?"
 )
+SCALE_SHIFT_PATTERN = re.compile(r"([A-G][#b]?)([+-]?)")
 
 
 def _log(message):
@@ -76,6 +78,45 @@ def _major_scale_mask(root_pitch_class):
         (root_pitch_class + interval) % 12 for interval in MAJOR_SCALE_INTERVALS
     )
     return _scale_mask_from_pitch_classes(pitch_classes)
+
+
+def _shifted_major_scale_mask(context):
+    """メジャースケールの構成音を指定どおり半音移動したマスクを返す。"""
+    bracket_position = context.find("[")
+    root_name = context[:bracket_position]
+    shift_text = context[bracket_position + 1 : -1]
+    root_pitch_class = _pitch_class_from_name(root_name)
+    original_pitch_classes = {
+        (root_pitch_class + interval) % 12 for interval in MAJOR_SCALE_INTERVALS
+    }
+    shifted_sources = set()
+    shifts = []
+
+    for note_name, direction in SCALE_SHIFT_PATTERN.findall(shift_text):
+        source = _pitch_class_from_name(note_name)
+        if not direction:
+            return None, "シフト対象音{0}に+または-が指定されていません".format(
+                note_name
+            )
+        if source not in original_pitch_classes:
+            return None, "シフト対象音{0}は元のメジャースケールに含まれません".format(
+                note_name
+            )
+        if source in shifted_sources:
+            return None, "シフト対象音{0}が重複しています".format(note_name)
+        shifted_sources.add(source)
+        destination = (source + (1 if direction == "+" else -1)) % 12
+        shifts.append((note_name, direction, destination))
+
+    result_pitch_classes = original_pitch_classes - shifted_sources
+    for note_name, direction, destination in shifts:
+        if destination in result_pitch_classes:
+            return None, "シフト後の音{0}{1}が別のスケール構成音と重なります".format(
+                note_name, direction
+            )
+        result_pitch_classes.add(destination)
+
+    return _scale_mask_from_pitch_classes(result_pitch_classes), None
 
 
 def _scale_contains(scale_mask, pitch_class):
@@ -130,6 +171,10 @@ def _parse_marker_name(name, time, score_index):
         scale_mask = int(context, 2)
     elif len(context) == 3:
         scale_mask = int(context, 16)
+    elif "[" in context:
+        scale_mask, reason = _shifted_major_scale_mask(context)
+        if scale_mask is None:
+            return None, reason
     else:
         scale_mask = _major_scale_mask(_pitch_class_from_name(context))
 
